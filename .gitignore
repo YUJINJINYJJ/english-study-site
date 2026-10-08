@@ -1,0 +1,21 @@
+/_backup/
+/_shots/
+/tools/
+__pycache__/
+*.pyc
+
+# 已废弃、不再被引用的旧数据文件（站点只使用 site.js）
+/js/data/articles.js
+/js/data/manifest.js
+/js/data/quiz.js
+/js/data/part1.js
+/js/data/part2.js
+/js/data/part3.js
+/js/data/part4.js
+/js/data/part5.js
+/js/data/part6.js
+/js/data/part7.js
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
