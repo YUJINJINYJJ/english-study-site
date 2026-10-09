@@ -21,6 +21,8 @@
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html{scroll-behavior:smooth}
+/* 非画布区域：允许单/双指垂直滚动，禁止双指捏合缩放与横向手势（画布自身 touch-action:none 覆盖） */
+html,body,.reader-wrap,.reader-head,.reader-nav,.topbar{touch-action:pan-y;overscroll-behavior:none}
 body{
   font-family:var(--sans);
   background:var(--paper);

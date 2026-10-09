@@ -364,16 +364,18 @@
       setEditing(m === "edit");
     }
 
-    /* ============ 指针：单指书写 / 双指滚动（鼠标=书写） ============ */
-    var pointers = new Map();
-    var gesture = null;          // 'draw' | 'scroll'
+    /* ====== 输入：鼠标=在画布上拖绘；触摸=单指书写 / 双指滚动（任意落点） ====== */
     var drawId = null;
     var lastPt = null, pendingEvt = null, rafId = 0;
-    var scrollLastMid = 0, scrollVel = 0, inertiaId = 0;
+    var lastClient = { clientX: 0, clientY: 0 };
+    var autoRaf = 0;
+    var panLastMid = 0, panRaf = 0, scrollVel = 0, inertiaId = 0;
+    var tPointers = new Map();   // 触摸点
+    var tGesture = null;         // 'draw' | 'pan' | 'native' | 'pan-done'
 
-    function midY() {
+    function midYOf(map) {
       var ys = [];
-      pointers.forEach(function (p) { ys.push(p.y); });
+      map.forEach(function (p) { ys.push(p.y); });
       if (ys.length < 2) return null;
       ys.sort(function (a, b) { return a - b; });
       var n = ys.length;
@@ -384,13 +386,33 @@
       stopInertia();
       var v = v0;
       if (Math.abs(v) < 1.5) return;
-      var step = function () {
+      (function step() {
         if (Math.abs(v) < 0.6) { inertiaId = 0; return; }
         window.scrollBy(0, v);
         v *= 0.92;
         inertiaId = requestAnimationFrame(step);
-      };
-      inertiaId = requestAnimationFrame(step);
+      })();
+    }
+    /* 边缘自动滚动：触点贴住屏幕顶/底缘时页面自动走，笔迹按整篇坐标连续延到下一屏 */
+    function stopAuto() { if (autoRaf) { cancelAnimationFrame(autoRaf); autoRaf = 0; } }
+    function startAuto() {
+      stopAuto();
+      (function loop() {
+        autoRaf = 0;
+        if (!drawing || !current) return;
+        var edge = 90, maxv = 24, vy = 0, cy = lastClient.clientY;
+        if (cy > window.innerHeight - edge) vy = ((cy - (window.innerHeight - edge)) / edge) * maxv;
+        else if (cy < edge) vy = -((edge - cy) / edge) * maxv;
+        if (vy) {
+          window.scrollBy(0, vy);
+          syncCanvasSize();
+          var p = getPos(lastClient);
+          if (!lastPt || Math.hypot(p.x - lastPt.x, p.y - lastPt.y) >= 0.6) {
+            current.points.push(p); extendBox(current, p); drawSegment(current, lastPt, p); lastPt = p;
+          }
+        }
+        autoRaf = requestAnimationFrame(loop);
+      })();
     }
     function beginStroke(e) {
       current = {
@@ -407,7 +429,7 @@
     }
     function cancelCurrentStroke() {
       if (current && strokes[strokes.length - 1] === current) strokes.pop();
-      current = null; drawing = false;
+      current = null; drawing = false; stopAuto();
       redraw();
     }
     function coalesced(ev) {
@@ -441,61 +463,110 @@
           lastPt = p;
         }
       }
-      drawing = false; current = null; drawId = null; gesture = null;
+      drawing = false; current = null; drawId = null; stopAuto();
     }
 
+    /* ---------- 鼠标：画布上按住拖绘，滚轮照常滚动 ---------- */
     canvas.addEventListener("pointerdown", function (e) {
-      if (mode === "select" || mode === "edit") return;
-      if (e.pointerType === "mouse" && e.button !== 0) return;
-      stopInertia();
+      if (e.pointerType !== "mouse") return;
+      if (mode === "select" || mode === "edit" || e.button !== 0) return;
+      stopInertia(); stopAuto();
       try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
       e.preventDefault();
-      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      if (pointers.size === 1) {
-        gesture = "draw"; drawId = e.pointerId; drawing = true;
-        beginStroke(e);
-      } else if (pointers.size === 2) {
-        if (gesture === "draw") { drawId = null; cancelCurrentStroke(); }
-        gesture = "scroll";
-        scrollLastMid = midY();
-        scrollVel = 0;
-        if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
-        pendingEvt = null;
-      }
+      drawId = "mouse"; drawing = true;
+      lastClient = { clientX: e.clientX, clientY: e.clientY };
+      beginStroke(e); startAuto();
     });
     canvas.addEventListener("pointermove", function (e) {
-      if (!pointers.has(e.pointerId)) return;
-      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      if (gesture === "scroll" && pointers.size >= 2) {
-        var mid = midY();
-        if (mid != null) {
-          var dy = scrollLastMid - mid;
-          if (dy) { window.scrollBy(0, dy); scrollVel = dy; }
-          scrollLastMid = mid;
-        }
-        e.preventDefault();
-      } else if (gesture === "draw" && e.pointerId === drawId) {
-        pendingEvt = e;
-        if (!rafId) rafId = requestAnimationFrame(flushDraw);
-        e.preventDefault();
-      }
+      if (e.pointerType !== "mouse" || !drawing || drawId !== "mouse") return;
+      lastClient = { clientX: e.clientX, clientY: e.clientY };
+      pendingEvt = e;
+      if (!rafId) rafId = requestAnimationFrame(flushDraw);
+      e.preventDefault();
     });
-    function endPointer(e) {
-      var was = gesture;
-      if (was === "draw" && e.pointerId === drawId) {
-        finishDraw();
-      }
-      pointers.delete(e.pointerId);
-      if (was === "scroll") {
-        if (pointers.size === 0) {
-          gesture = null;
-          startInertia(scrollVel);
-        }
-      }
+    function mouseUp(e) {
+      if (e.pointerType !== "mouse" || drawId !== "mouse") return;
       try { canvas.releasePointerCapture && canvas.releasePointerCapture(e.pointerId); } catch (err) {}
+      finishDraw(); drawId = null;
     }
-    canvas.addEventListener("pointerup", endPointer);
-    canvas.addEventListener("pointercancel", endPointer);
+    canvas.addEventListener("pointerup", mouseUp);
+    canvas.addEventListener("pointercancel", mouseUp);
+
+    /* ---------- 触摸：window 级统一处理，双指落在屏幕任何位置都能滚动 ---------- */
+    function onTouchStart(ev) {
+      if (ev.pointerType !== "touch") return;
+      if (mode === "select" || mode === "edit") return;
+      stopInertia();
+      tPointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+      if (tPointers.size === 1) {
+        if (ev.target === canvas || canvas.contains(ev.target)) {
+          ev.preventDefault();
+          tGesture = "draw"; drawId = ev.pointerId; drawing = true;
+          lastClient = { clientX: ev.clientX, clientY: ev.clientY };
+          beginStroke(ev); startAuto();
+        } else {
+          tGesture = "native"; drawId = null;   // 落在纸张外：交给浏览器原生滚动
+        }
+      } else if (tPointers.size === 2) {
+        if (drawing) cancelCurrentStroke();       // 第二指落下：取消刚起的笔，转双指滚动
+        stopAuto();
+        tGesture = "pan"; drawId = null;
+        panLastMid = midYOf(tPointers); scrollVel = 0;
+        if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+        if (panRaf) { cancelAnimationFrame(panRaf); panRaf = 0; }
+        pendingEvt = null;
+        ev.preventDefault();
+      }
+    }
+    function panFrame() {
+      panRaf = 0;
+      if (tGesture !== "pan" || tPointers.size < 2) return;
+      var mid = midYOf(tPointers);
+      if (mid != null) {
+        var dy = panLastMid - mid;
+        if (dy) { window.scrollBy(0, dy); scrollVel = dy; }
+        panLastMid = mid;
+      }
+    }
+    function onTouchMove(ev) {
+      if (ev.pointerType !== "touch") return;
+      if (!tPointers.has(ev.pointerId)) return;
+      tPointers.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+      if (tGesture === "pan" && tPointers.size >= 2) {
+        ev.preventDefault();
+        /* 一帧内两根手指会各触发一次 move，统一到帧末按中心点只滚一次，避免半步/重复 */
+        if (!panRaf) panRaf = requestAnimationFrame(panFrame);
+      } else if (tGesture === "draw" && ev.pointerId === drawId) {
+        ev.preventDefault();
+        lastClient = { clientX: ev.clientX, clientY: ev.clientY };
+        pendingEvt = ev;
+        if (!rafId) rafId = requestAnimationFrame(flushDraw);
+      }
+    }
+    function onTouchEnd(ev) {
+      if (ev.pointerType !== "touch") return;
+      var was = tGesture;
+      if (was === "draw" && ev.pointerId === drawId) { finishDraw(); }
+      tPointers.delete(ev.pointerId);
+      if (was === "pan") {
+        if (tPointers.size === 0) { tGesture = null; startInertia(scrollVel); }
+        else { tGesture = "pan-done"; }
+      }
+      if (tPointers.size === 0) { tGesture = null; drawId = null; stopAuto(); }
+    }
+    window.addEventListener("pointerdown", onTouchStart, true);
+    window.addEventListener("pointermove", onTouchMove, true);
+    window.addEventListener("pointerup", onTouchEnd, true);
+    window.addEventListener("pointercancel", onTouchEnd, true);
+    /* 双指时在原生 touch 事件上拦截浏览器默认滚动/捏合，滚动统一由脚本控制，避免一内一外双滚 */
+    function onNativeTouchStart(ev) {
+      if (tGesture === "pan" || (ev.touches && ev.touches.length >= 2 && drawing)) ev.preventDefault();
+    }
+    function onNativeTouchMove(ev) {
+      if (tGesture === "pan" && tPointers.size >= 2) ev.preventDefault();
+    }
+    window.addEventListener("touchstart", onNativeTouchStart, { passive: false, capture: true });
+    window.addEventListener("touchmove", onNativeTouchMove, { passive: false, capture: true });
 
     function onAction(e) {
       switch (e.detail.action) {
@@ -657,9 +728,16 @@
     return {
       destroy: function () {
         try { setEditing(false); } catch (e) {}
+        stopAuto(); stopInertia();
         tb.removeEventListener("annotate-action", onAction);
         window.removeEventListener("resize", syncCanvasSize);
         window.removeEventListener("scroll", onScroll);
+        window.removeEventListener("pointerdown", onTouchStart, true);
+        window.removeEventListener("pointermove", onTouchMove, true);
+        window.removeEventListener("pointerup", onTouchEnd, true);
+        window.removeEventListener("pointercancel", onTouchEnd, true);
+        window.removeEventListener("touchstart", onNativeTouchStart, { capture: true });
+        window.removeEventListener("touchmove", onNativeTouchMove, { capture: true });
         if (ro) ro.disconnect();
       }
     };
