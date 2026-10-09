@@ -81,9 +81,9 @@
     var html = topbarHTML();
     html += '<div class="home"><div class="hero">' +
       '<div><h1>把每个场景的英语，<br><span class="accent">读透、画透、练透</span></h1>' +
-      '<p>下面是全部学习文件，点开一个文件选择章节，进入后是一整课：词汇、对话、总结、练习答案在同一页连续阅读，可直接涂画批注、删改文字并导出笔记图片。</p></div>' +
+      '<p>下面是三个部分，点开一个部分选择章节，进入后是一整课：词汇、对话、句型、总结、练习答案在同一页连续阅读，可直接涂画批注、删改文字并导出笔记图片。</p></div>' +
       '<div class="hero-stats">' +
-      '<div class="hero-stat"><div class="num">' + DATA.categories.length + '</div><div class="lbl">学习文件</div></div>' +
+      '<div class="hero-stat"><div class="num">' + DATA.categories.length + '</div><div class="lbl">学习部分</div></div>' +
       '<div class="hero-stat"><div class="num">' + TOTAL_MOD + '</div><div class="lbl">精读章节</div></div>' +
       '<div class="hero-stat"><div class="num">' + TOTAL_SEC + '</div><div class="lbl">知识板块</div></div>' +
       '</div></div>';
@@ -100,10 +100,9 @@
         (cat.range ? '<div class="fsub"><span class="frange">' + esc(cat.range) + '</span></div>' : '') +
         '<div class="file-progress"><span class="fp-bar"><i style="width:' + pct + '%"></i></span></div>' +
         '</div>' +
-        '<div class="file-meta">' + (cat.single
-          ? '<div class="fm-num">整本 <small>合订</small></div>'
-          : '<div class="fm-num">' + nm + ' <small>章</small></div><div class="fm-num">' + secs + ' <small>板块</small></div>') +
-        '<div class="file-go">' + (cat.single ? '开始阅读 ›' : '进入目录 ›') + '</div></div>' +
+        '<div class="file-meta">' +
+          '<div class="fm-num">' + nm + ' <small>章</small></div><div class="fm-num">' + secs + ' <small>板块</small></div>' +
+        '<div class="file-go">进入目录 ›</div></div>' +
         '</a>';
     });
     html += '</div></div>';
@@ -114,7 +113,6 @@
   function renderCategory(cid) {
     var cat = CAT_INDEX[decodeURIComponent(cid)];
     if (!cat) { location.hash = "#/"; return; }
-    if (cat.modules.length === 1) { location.hash = "#/a/" + firstAid(cat.modules[0]); return; }
     var nm = cat.modules.length, secs = catSecs(cat), dn = catModDone(cat);
     var html = topbarHTML();
     html += '<div class="page">';
