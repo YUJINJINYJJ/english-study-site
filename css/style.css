@@ -421,3 +421,6 @@ a{color:var(--brand);text-decoration:none}
   .at-sep{margin:0 1px;height:18px}
   .brand-sub{display:none}
 }
+
+/* 添加到主屏幕（standalone）时，为底部 Home 指示条留白 */
+body{ padding-bottom: env(safe-area-inset-bottom, 0px); }

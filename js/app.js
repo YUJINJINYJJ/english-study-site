@@ -97,8 +97,7 @@
         '<div class="file-badge">' + String(ci + 1).padStart(2, "0") + '</div>' +
         '<div class="file-main">' +
         '<div class="ftitle">' + esc(cat.title || cat.name) + '</div>' +
-        '<div class="fsub">' + (cat.range ? '<span class="frange">' + esc(cat.range) + '</span>' : '') +
-        '<span class="fname">' + esc(cat.file || "") + '</span></div>' +
+        (cat.range ? '<div class="fsub"><span class="frange">' + esc(cat.range) + '</span></div>' : '') +
         '<div class="file-progress"><span class="fp-bar"><i style="width:' + pct + '%"></i></span></div>' +
         '</div>' +
         '<div class="file-meta"><div class="fm-num">' + nm + ' <small>章</small></div>' +
@@ -122,7 +121,6 @@
     html += '<div class="cat-hero">' +
       (cat.range ? '<div class="ch-range">' + esc(cat.range) + '</div>' : '') +
       '<h1>' + esc(cat.title || cat.name) + '</h1>' +
-      '<div class="ch-file">' + esc(cat.file || "") + '</div>' +
       '<div class="ch-sub">共 <b>' + nm + '</b> 章 · <b>' + secs + '</b> 个知识板块 · 已学完 <b>' + dn + '</b> 章；点击章节进入整课</div>' +
       '</div>';
     html += '<div class="mod-grid mod-grid-flat">';
