@@ -161,7 +161,14 @@
     var exportName = opts.exportName || "article";
     var ctx = canvas.getContext("2d");
     var hlCtx = hlCanvas ? hlCanvas.getContext("2d") : null;
-    var dpr = window.devicePixelRatio || 1;
+    var dprBase = Math.min(window.devicePixelRatio || 1, 2);
+    var dprA = dprBase, dprH = dprBase;
+    /* 整页画布可能很高，按像素预算下调分辨率，避免移动端画布过大导致卡顿/空白 */
+    function dprFor(w, h) {
+      var d = dprBase;
+      while (d > 1 && w * h * d * d > 24000000) d -= 0.5;
+      return Math.max(1, d);
+    }
     var strokes = [], redoStack = [];
     var mode = "pen", penSize = 5, penColor = "#c4453c";
     var drawing = false, current = null;
@@ -246,29 +253,40 @@
     }
 
     function syncCanvasSize() {
+      var changed = false, hlChanged = false;
       var w = cssWidth(), h = cssHeight();
       if (w > 0 && h > 0) {
-        canvas.style.width = w + "px";
-        canvas.style.height = h + "px";
-        canvas.width = Math.round(w * dpr);
-        canvas.height = Math.round(h * dpr);
+        dprA = dprFor(w, h);
+        var pw = Math.round(w * dprA), ph = Math.round(h * dprA);
+        if (canvas.width !== pw || canvas.height !== ph) {
+          canvas.style.width = w + "px";
+          canvas.style.height = h + "px";
+          canvas.width = pw;
+          canvas.height = ph;
+          changed = true;
+        }
       }
       if (hlCanvas && stageEl) {
         var hw = stageEl.clientWidth, hh = stageEl.clientHeight;
         if (hw > 0 && hh > 0) {
-          hlCanvas.style.width = hw + "px";
-          hlCanvas.style.height = hh + "px";
-          hlCanvas.width = Math.round(hw * dpr);
-          hlCanvas.height = Math.round(hh * dpr);
+          dprH = dprFor(hw, hh);
+          var hpw = Math.round(hw * dprH), hph = Math.round(hh * dprH);
+          if (hlCanvas.width !== hpw || hlCanvas.height !== hph) {
+            hlCanvas.style.width = hw + "px";
+            hlCanvas.style.height = hh + "px";
+            hlCanvas.width = hpw;
+            hlCanvas.height = hph;
+            hlChanged = true;
+          }
         }
       }
-      redraw();
+      if (changed || hlChanged) redraw();
     }
     function redraw() {
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.setTransform(dprA, 0, 0, dprA, 0, 0);
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       if (hlCtx && hlCanvas) {
-        hlCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        hlCtx.setTransform(dprH, 0, 0, dprH, 0, 0);
         hlCtx.clearRect(0, 0, hlCanvas.width, hlCanvas.height);
       }
       strokes.forEach(function (s) {
@@ -281,6 +299,7 @@
     function paintPen(s) {
       if (s.points.length < 2) return;
       ctx.save();
+      ctx.setTransform(dprA, 0, 0, dprA, 0, 0);
       if (s.type === "eraser") {
         ctx.globalCompositeOperation = "destination-out";
         ctx.strokeStyle = "rgba(0,0,0,1)";
@@ -303,7 +322,7 @@
       if (!hlCtx || !hlCanvas || s.points.length < 2) return;
       var o = hlOffset();
       hlCtx.save();
-      hlCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      hlCtx.setTransform(dprH, 0, 0, dprH, 0, 0);
       hlCtx.translate(-o.x, -o.y);
       if (isEraser) {
         hlCtx.globalCompositeOperation = "destination-out";
@@ -327,6 +346,49 @@
       // rect 已随页面滚动变化，client 坐标减 rect 即画布内部坐标
       return { x: e.clientX - r.left, y: e.clientY - r.top };
     }
+    /* ---- 增量绘制：每帧只画上一点→当前点，避免整张重绘造成卡顿 ---- */
+    function segPen(s, p0, p1) {
+      ctx.save();
+      ctx.setTransform(dprA, 0, 0, dprA, 0, 0);
+      if (s.type === "eraser") {
+        ctx.globalCompositeOperation = "destination-out";
+        ctx.strokeStyle = "rgba(0,0,0,1)";
+        ctx.globalAlpha = 1;
+      } else {
+        ctx.globalCompositeOperation = "source-over";
+        ctx.strokeStyle = s.color;
+        ctx.globalAlpha = 1;
+      }
+      ctx.lineWidth = s.size;
+      ctx.lineCap = "round"; ctx.lineJoin = "round";
+      ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y); ctx.stroke();
+      ctx.restore();
+    }
+    function segHl(s, p0, p1, erase) {
+      if (!hlCtx || !hlCanvas) return;
+      var o = hlOffset();
+      hlCtx.save();
+      hlCtx.setTransform(dprH, 0, 0, dprH, 0, 0);
+      hlCtx.translate(-o.x, -o.y);
+      if (erase) {
+        hlCtx.globalCompositeOperation = "destination-out";
+        hlCtx.strokeStyle = "rgba(0,0,0,1)";
+        hlCtx.globalAlpha = 1;
+      } else {
+        hlCtx.globalCompositeOperation = "source-over";
+        hlCtx.strokeStyle = s.color;
+        hlCtx.globalAlpha = 0.5;
+      }
+      hlCtx.lineWidth = s.size;
+      hlCtx.lineCap = "round"; hlCtx.lineJoin = "round";
+      hlCtx.beginPath(); hlCtx.moveTo(p0.x, p0.y); hlCtx.lineTo(p1.x, p1.y); hlCtx.stroke();
+      hlCtx.restore();
+    }
+    function drawSegment(s, p0, p1) {
+      if (s.type === "highlight") { segHl(s, p0, p1, false); }
+      else if (s.type === "eraser") { segPen(s, p0, p1); segHl(s, p0, p1, true); }
+      else { segPen(s, p0, p1); }
+    }
     function setMode(m) {
       mode = m;
       var through = (m === "select" || m === "edit");
@@ -339,9 +401,35 @@
       setEditing(m === "edit");
     }
 
-    canvas.addEventListener("pointerdown", function (e) {
-      if (mode === "select" || mode === "edit") return;
-      drawing = true;
+    /* ============ 指针：单指书写 / 双指滚动（鼠标=书写） ============ */
+    var pointers = new Map();
+    var gesture = null;          // 'draw' | 'scroll'
+    var drawId = null;
+    var lastPt = null, pendingEvt = null, rafId = 0;
+    var scrollLastMid = 0, scrollVel = 0, inertiaId = 0;
+
+    function midY() {
+      var ys = [];
+      pointers.forEach(function (p) { ys.push(p.y); });
+      if (ys.length < 2) return null;
+      ys.sort(function (a, b) { return a - b; });
+      var n = ys.length;
+      return n % 2 ? ys[(n - 1) / 2] : (ys[n / 2 - 1] + ys[n / 2]) / 2;
+    }
+    function stopInertia() { if (inertiaId) { cancelAnimationFrame(inertiaId); inertiaId = 0; } }
+    function startInertia(v0) {
+      stopInertia();
+      var v = v0;
+      if (Math.abs(v) < 1.5) return;
+      var step = function () {
+        if (Math.abs(v) < 0.6) { inertiaId = 0; return; }
+        window.scrollBy(0, v);
+        v *= 0.92;
+        inertiaId = requestAnimationFrame(step);
+      };
+      inertiaId = requestAnimationFrame(step);
+    }
+    function beginStroke(e) {
       current = {
         type: mode,
         color: mode === "highlight" ? "#ffe23d" : penColor,
@@ -350,17 +438,101 @@
       };
       strokes.push(current);
       redoStack = [];
+      lastPt = current.points[0];
+    }
+    function cancelCurrentStroke() {
+      if (current && strokes[strokes.length - 1] === current) strokes.pop();
+      current = null; drawing = false;
+      redraw();
+    }
+    function coalesced(ev) {
+      try {
+        var list = ev.getCoalescedEvents && ev.getCoalescedEvents();
+        if (list && list.length) return list;
+      } catch (err) {}
+      return [ev];
+    }
+    function flushDraw() {
+      rafId = 0;
+      var ev = pendingEvt; pendingEvt = null;
+      if (!ev || !current) return;
+      var list = coalesced(ev);
+      for (var i = 0; i < list.length; i++) {
+        var p = getPos(list[i]);
+        current.points.push(p);
+        drawSegment(current, lastPt, p);
+        lastPt = p;
+      }
+    }
+    function finishDraw() {
+      if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+      if (pendingEvt && current) {
+        var ev = pendingEvt; pendingEvt = null;
+        var list = coalesced(ev);
+        for (var i = 0; i < list.length; i++) {
+          var p = getPos(list[i]);
+          current.points.push(p);
+          drawSegment(current, lastPt, p);
+          lastPt = p;
+        }
+      }
+      drawing = false; current = null; drawId = null; gesture = null;
+    }
+
+    canvas.addEventListener("pointerdown", function (e) {
+      if (mode === "select" || mode === "edit") return;
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      stopInertia();
       try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
       e.preventDefault();
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pointers.size === 1) {
+        gesture = "draw"; drawId = e.pointerId; drawing = true;
+        beginStroke(e);
+      } else if (pointers.size === 2) {
+        // 第二指落下：放弃正在画的这笔，进入双指滚动
+        if (gesture === "draw") { drawId = null; cancelCurrentStroke(); }
+        gesture = "scroll";
+        scrollLastMid = midY();
+        scrollVel = 0;
+        if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+        pendingEvt = null;
+      }
     });
     canvas.addEventListener("pointermove", function (e) {
-      if (!drawing || !current) return;
-      current.points.push(getPos(e));
-      redraw();
+      if (!pointers.has(e.pointerId)) return;
+      pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (gesture === "scroll" && pointers.size >= 2) {
+        var mid = midY();
+        if (mid != null) {
+          var dy = scrollLastMid - mid;
+          if (dy) { window.scrollBy(0, dy); scrollVel = dy; }
+          scrollLastMid = mid;
+        }
+        e.preventDefault();
+      } else if (gesture === "draw" && e.pointerId === drawId) {
+        pendingEvt = e;
+        if (!rafId) rafId = requestAnimationFrame(flushDraw);
+        e.preventDefault();
+      }
     });
-    function stopDraw() { drawing = false; current = null; }
-    canvas.addEventListener("pointerup", stopDraw);
-    canvas.addEventListener("pointercancel", stopDraw);
+    function endPointer(e) {
+      var was = gesture;
+      if (was === "draw" && e.pointerId === drawId) {
+        finishDraw();
+      }
+      pointers.delete(e.pointerId);
+      if (was === "scroll") {
+        if (pointers.size === 0) {
+          gesture = null;
+          startInertia(scrollVel);
+        }
+        // 还剩一根手指时保持滚动状态，不把它当成书写，直到全部抬起
+      }
+      try { canvas.releasePointerCapture && canvas.releasePointerCapture(e.pointerId); } catch (err) {}
+    }
+    canvas.addEventListener("pointerup", endPointer);
+    canvas.addEventListener("pointercancel", endPointer);
 
     function onAction(e) {
       switch (e.detail.action) {
