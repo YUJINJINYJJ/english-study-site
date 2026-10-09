@@ -100,9 +100,10 @@
         (cat.range ? '<div class="fsub"><span class="frange">' + esc(cat.range) + '</span></div>' : '') +
         '<div class="file-progress"><span class="fp-bar"><i style="width:' + pct + '%"></i></span></div>' +
         '</div>' +
-        '<div class="file-meta"><div class="fm-num">' + nm + ' <small>章</small></div>' +
-        '<div class="fm-num">' + secs + ' <small>板块</small></div>' +
-        '<div class="file-go">进入目录 ›</div></div>' +
+        '<div class="file-meta">' + (cat.single
+          ? '<div class="fm-num">整本 <small>合订</small></div>'
+          : '<div class="fm-num">' + nm + ' <small>章</small></div><div class="fm-num">' + secs + ' <small>板块</small></div>') +
+        '<div class="file-go">' + (cat.single ? '开始阅读 ›' : '进入目录 ›') + '</div></div>' +
         '</a>';
     });
     html += '</div></div>';
@@ -113,6 +114,7 @@
   function renderCategory(cid) {
     var cat = CAT_INDEX[decodeURIComponent(cid)];
     if (!cat) { location.hash = "#/"; return; }
+    if (cat.modules.length === 1) { location.hash = "#/a/" + firstAid(cat.modules[0]); return; }
     var nm = cat.modules.length, secs = catSecs(cat), dn = catModDone(cat);
     var html = topbarHTML();
     html += '<div class="page">';
@@ -198,19 +200,22 @@
       '</nav></div>';
     html += '<div class="annotate-stage"><div class="annotate-text">' + textHtml + "</div></div>";
 
-    /* 上一章 / 下一章：连通到相邻的具体章节 */
-    html += '<div class="chapter-nav">';
-    html += chapterPrev
-      ? '<a class="cn-side prev" href="#/a/' + firstAid(chapterPrev) + '"><span class="cn-dir">‹ 上一章</span><span class="cn-name">' + esc(modLabel(chapterPrev, mi - 1)) + '</span></a>'
-      : '<span class="cn-side prev disabled"><span class="cn-dir">‹ 上一章</span><span class="cn-name">已是第一章</span></span>';
-    html += '<span class="cn-now">第 ' + (mi + 1) + ' / ' + nMod + ' 章</span>';
-    html += chapterNext
-      ? '<a class="cn-side next" href="#/a/' + firstAid(chapterNext) + '"><span class="cn-dir">下一章 ›</span><span class="cn-name">' + esc(modLabel(chapterNext, mi + 1)) + '</span></a>'
-      : '<span class="cn-side next disabled"><span class="cn-dir">下一章 ›</span><span class="cn-name">已是最后一章</span></span>';
-    html += '</div>';
+    /* 上一章 / 下一章：连通到相邻的具体章节；整篇合订（仅 1 章）时不显示 */
+    if (nMod > 1) {
+      html += '<div class="chapter-nav">';
+      html += chapterPrev
+        ? '<a class="cn-side prev" href="#/a/' + firstAid(chapterPrev) + '"><span class="cn-dir">‹ 上一章</span><span class="cn-name">' + esc(modLabel(chapterPrev, mi - 1)) + '</span></a>'
+        : '<span class="cn-side prev disabled"><span class="cn-dir">‹ 上一章</span><span class="cn-name">已是第一章</span></span>';
+      html += '<span class="cn-now">第 ' + (mi + 1) + ' / ' + nMod + ' 章</span>';
+      html += chapterNext
+        ? '<a class="cn-side next" href="#/a/' + firstAid(chapterNext) + '"><span class="cn-dir">下一章 ›</span><span class="cn-name">' + esc(modLabel(chapterNext, mi + 1)) + '</span></a>'
+        : '<span class="cn-side next disabled"><span class="cn-dir">下一章 ›</span><span class="cn-name">已是最后一章</span></span>';
+      html += '</div>';
+    }
 
     html += '<div class="reader-nav reader-nav-single"><div class="rnav-center">' +
-      '<a class="btn-mod-back" href="#/c/' + encodeURIComponent(cat.id) + '">返回章节目录</a>' +
+      '<a class="btn-mod-back" href="' + (nMod === 1 ? '#/' : '#/c/' + encodeURIComponent(cat.id)) + '">' +
+      (nMod === 1 ? '返回首页' : '返回章节目录') + '</a>' +
       '<button class="btn-learn' + (done ? ' is-done' : '') + '" id="btn-learn">' + (done ? "✓ 已学完" : "标记学完") + '</button>' +
       "</div></div>";
     html += "</div>";

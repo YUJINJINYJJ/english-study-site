@@ -1,11 +1,12 @@
 /* ============================================================
-   批注模块（整页挂载版）
-   AnnotateApp.mount(containerEl, {exportName})
-   - container 为整个阅读页（面包屑 + 纸张 + 底部导航）
-   - 画布覆盖整个 container：画笔/荧光笔/橡皮/选择/撤销/重做/清空
-   - 细窄悬浮工具栏：滚动固定、空白处可拖动、按钮不触发拖动
-   - 选择模式画布穿透：可选中复制文字、点击页面链接
-   - 导出：整页原文（foreignObject 保真排版）+ 批注叠加 → PNG
+   批注模块（视口画布版，支持任意长页面）
+   AnnotateApp.mount(containerEl, {exportName, editKey})
+   - 画笔/荧光画布只覆盖纸张当前可视区域，随页面滚动同步移动并重绘；
+     笔画一律按整篇（纸张）坐标保存，翻到任何位置都能写、不会被浏览器
+     单张画布 32767px 边长上限截断。
+   - 工具：画笔/荧光笔/橡皮/选择/删改文字/撤销/重做/清空/导出 PNG
+   - 单指书写、双指滚动（鼠标=书写）；选择模式画布穿透可选中复制
+   - 导出：整篇按 12000px 一段渲染为高清 PNG（短课仍为单张）
    ============================================================ */
 (function () {
   "use strict";
@@ -32,20 +33,21 @@
   };
 
   /* ============================================================
-     挂载入口：canvas 覆盖整个 container
+     挂载入口：两张画布都放进纸张（stage），随视口移动
      ============================================================ */
   function mount(container, opts) {
     opts = opts || {};
-    var canvas = document.createElement("canvas");
-    canvas.id = "annotate-canvas";
-    container.appendChild(canvas);
+    var stageEl0 = container.querySelector(".annotate-stage");
 
-    // 荧光层高亮层：放进纸张内部、文字下方
     var hl = document.createElement("canvas");
     hl.id = "annotate-hl";
-    var stageEl0 = container.querySelector(".annotate-stage");
     if (stageEl0) stageEl0.insertBefore(hl, stageEl0.firstChild);
     else container.appendChild(hl);
+
+    var canvas = document.createElement("canvas");
+    canvas.id = "annotate-canvas";
+    if (stageEl0) stageEl0.appendChild(canvas);
+    else container.appendChild(canvas);
 
     var tb = buildToolbar();
     document.body.appendChild(tb);
@@ -154,21 +156,17 @@
   }
 
   /* ============================================================
-     绘图核心
+     绘图核心（视口画布 + 整篇坐标）
      ============================================================ */
   function initDrawing(canvas, hlCanvas, container, tb, opts) {
     opts = opts || {};
     var exportName = opts.exportName || "article";
     var ctx = canvas.getContext("2d");
     var hlCtx = hlCanvas ? hlCanvas.getContext("2d") : null;
-    var dprBase = Math.min(window.devicePixelRatio || 1, 2);
-    var dprA = dprBase, dprH = dprBase;
-    /* 整页画布可能很高，按像素预算下调分辨率，避免移动端画布过大导致卡顿/空白 */
-    function dprFor(w, h) {
-      var d = dprBase;
-      while (d > 1 && w * h * d * d > 24000000) d -= 0.5;
-      return Math.max(1, d);
-    }
+    /* 画布只覆盖一个视口，分辨率固定封顶 2 倍，不会随页面变高而膨胀 */
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var dprA = dpr, dprH = dpr;
+
     var strokes = [], redoStack = [];
     var SIZE_STORE = "english-annotate-pensize-v1";
     function readPenSize() {
@@ -248,157 +246,116 @@
     }
     restoreEdit();
 
-    function cssWidth() { return container.clientWidth; }
-    function cssHeight() { return Math.max(container.clientHeight, container.scrollHeight); }
-
-    /* 荧光层在纸张坐标系中的文档偏移 */
-    function hlOffset() {
-      if (!hlCanvas) return { x: 0, y: 0 };
-      var r = hlCanvas.getBoundingClientRect();
-      return { x: r.left + window.scrollX, y: r.top + window.scrollY };
+    /* ---------- 视口几何：画布始终覆盖纸张在屏幕上的可见段 ---------- */
+    var view = { x0: 0, y0: 0, x1: 0, y1: 0, w: 1, h: 1, sw: 1, sh: 1 };
+    function stageOrigin() {
+      var r = stageEl.getBoundingClientRect();
+      return { x: r.left + stageEl.clientLeft + window.scrollX,
+               y: r.top + stageEl.clientTop + window.scrollY };
+    }
+    function computeView() {
+      var o = stageOrigin();
+      var SW = stageEl.clientWidth, SH = stageEl.clientHeight;
+      var lx = window.scrollX - o.x, ly = window.scrollY - o.y;
+      var x0 = Math.max(0, Math.min(SW, lx));
+      var x1 = Math.max(0, Math.min(SW, lx + window.innerWidth));
+      var y0 = Math.max(0, Math.min(SH, ly));
+      var y1 = Math.max(0, Math.min(SH, ly + window.innerHeight));
+      if (x1 <= x0) { x0 = 0; x1 = SW; }
+      if (y1 <= y0) { y0 = 0; y1 = Math.min(SH, Math.max(1, window.innerHeight)); }
+      view = { x0: x0, y0: y0, x1: x1, y1: y1,
+               w: Math.max(1, Math.round(x1 - x0)), h: Math.max(1, Math.round(y1 - y0)),
+               sw: SW, sh: SH };
+    }
+    function placeCanvas(cv, w, h, dd) {
+      var pw = Math.round(w * dd), ph = Math.round(h * dd);
+      if (cv.width !== pw || cv.height !== ph) { cv.width = pw; cv.height = ph; }
+      cv.style.position = "absolute";
+      cv.style.right = "auto"; cv.style.bottom = "auto";
+      cv.style.left = view.x0 + "px";
+      cv.style.top = view.y0 + "px";
+      cv.style.width = w + "px";
+      cv.style.height = h + "px";
+    }
+    var lastKey = "";
+    function syncCanvasSize() {
+      if (!stageEl) return;
+      computeView();
+      var key = [view.x0, view.y0, view.w, view.h, view.sw, view.sh].join("_");
+      placeCanvas(canvas, view.w, view.h, dprA);
+      if (hlCanvas) placeCanvas(hlCanvas, view.w, view.h, dprH);
+      if (key !== lastKey) { lastKey = key; redraw(); }
     }
 
-    function syncCanvasSize() {
-      var changed = false, hlChanged = false;
-      var w = cssWidth(), h = cssHeight();
-      if (w > 0 && h > 0) {
-        dprA = dprFor(w, h);
-        var pw = Math.round(w * dprA), ph = Math.round(h * dprA);
-        if (canvas.width !== pw || canvas.height !== ph) {
-          canvas.style.width = w + "px";
-          canvas.style.height = h + "px";
-          canvas.width = pw;
-          canvas.height = ph;
-          changed = true;
-        }
+    /* ---------- 坐标 / 变换 / 命中 ---------- */
+    function getPos(e) {
+      var o = stageOrigin();
+      return { x: e.clientX + window.scrollX - o.x, y: e.clientY + window.scrollY - o.y };
+    }
+    function penT() { ctx.setTransform(dprA, 0, 0, dprA, -view.x0 * dprA, -view.y0 * dprA); }
+    function hlT() { if (hlCtx) hlCtx.setTransform(dprH, 0, 0, dprH, -view.x0 * dprH, -view.y0 * dprH); }
+    function extendBox(s, p) {
+      var m = s.size / 2 + 2;
+      if (!s.box) s.box = { x0: p.x - m, y0: p.y - m, x1: p.x + m, y1: p.y + m };
+      else { s.box.x0 = Math.min(s.box.x0, p.x - m); s.box.y0 = Math.min(s.box.y0, p.y - m);
+             s.box.x1 = Math.max(s.box.x1, p.x + m); s.box.y1 = Math.max(s.box.y1, p.y + m); }
+    }
+    function inView(box) {
+      return box && !(box.x1 < view.x0 || box.x0 > view.x1 || box.y1 < view.y0 || box.y0 > view.y1);
+    }
+    function applyStyle(c2, s, erase) {
+      c2.lineWidth = s.size; c2.lineCap = "round"; c2.lineJoin = "round";
+      if (erase) { c2.globalCompositeOperation = "destination-out"; c2.strokeStyle = "rgba(0,0,0,1)"; c2.globalAlpha = 1; }
+      else {
+        c2.globalCompositeOperation = "source-over";
+        c2.strokeStyle = s.color;
+        c2.globalAlpha = s.type === "highlight" ? 0.5 : 1;
       }
-      if (hlCanvas && stageEl) {
-        var hw = stageEl.clientWidth, hh = stageEl.clientHeight;
-        if (hw > 0 && hh > 0) {
-          dprH = dprFor(hw, hh);
-          var hpw = Math.round(hw * dprH), hph = Math.round(hh * dprH);
-          if (hlCanvas.width !== hpw || hlCanvas.height !== hph) {
-            hlCanvas.style.width = hw + "px";
-            hlCanvas.style.height = hh + "px";
-            hlCanvas.width = hpw;
-            hlCanvas.height = hph;
-            hlChanged = true;
-          }
-        }
-      }
-      if (changed || hlChanged) redraw();
+    }
+    function trace(c2, s) {
+      if (s.points.length < 2) return;
+      c2.beginPath();
+      c2.moveTo(s.points[0].x, s.points[0].y);
+      for (var i = 1; i < s.points.length; i++) c2.lineTo(s.points[i].x, s.points[i].y);
+      c2.stroke();
     }
     function redraw() {
-      ctx.setTransform(dprA, 0, 0, dprA, 0, 0);
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      if (hlCtx && hlCanvas) {
-        hlCtx.setTransform(dprH, 0, 0, dprH, 0, 0);
-        hlCtx.clearRect(0, 0, hlCanvas.width, hlCanvas.height);
-      }
+      if (hlCtx) { hlCtx.setTransform(1, 0, 0, 1, 0, 0); hlCtx.clearRect(0, 0, hlCanvas.width, hlCanvas.height); }
+      penT(); if (hlCtx) hlT();
       strokes.forEach(function (s) {
+        if (s.box && !inView(s.box)) return;
         if (s.type === "highlight") { paintHl(s, false); }
-        else if (s.type === "eraser") { paintPen(s); paintHl(s, true); }
-        else { paintPen(s); }
+        else if (s.type === "eraser") { paintPen(s, true); paintHl(s, true); }
+        else { paintPen(s, false); }
       });
     }
-    /* 普通画笔 / 橡皮（顶层，文档坐标） */
-    function paintPen(s) {
-      if (s.points.length < 2) return;
-      ctx.save();
-      ctx.setTransform(dprA, 0, 0, dprA, 0, 0);
-      if (s.type === "eraser") {
-        ctx.globalCompositeOperation = "destination-out";
-        ctx.strokeStyle = "rgba(0,0,0,1)";
-        ctx.globalAlpha = 1;
-      } else {
-        ctx.globalCompositeOperation = "source-over";
-        ctx.strokeStyle = s.color;
-        ctx.globalAlpha = 1;
-      }
-      ctx.lineWidth = s.size;
-      ctx.lineCap = "round"; ctx.lineJoin = "round";
-      ctx.beginPath();
-      ctx.moveTo(s.points[0].x, s.points[0].y);
-      for (var i = 1; i < s.points.length; i++) ctx.lineTo(s.points[i].x, s.points[i].y);
-      ctx.stroke();
-      ctx.restore();
+    function paintPen(s, erase) {
+      ctx.save(); penT(); applyStyle(ctx, s, erase || s.type === "eraser"); trace(ctx, s); ctx.restore();
     }
-    /* 荧光（纸张内、文字下层）；isEraser 时在该层擦除 */
-    function paintHl(s, isEraser) {
-      if (!hlCtx || !hlCanvas || s.points.length < 2) return;
-      var o = hlOffset();
-      hlCtx.save();
-      hlCtx.setTransform(dprH, 0, 0, dprH, 0, 0);
-      hlCtx.translate(-o.x, -o.y);
-      if (isEraser) {
-        hlCtx.globalCompositeOperation = "destination-out";
-        hlCtx.strokeStyle = "rgba(0,0,0,1)";
-        hlCtx.globalAlpha = 1;
-      } else {
-        hlCtx.globalCompositeOperation = "source-over";
-        hlCtx.strokeStyle = s.color;
-        hlCtx.globalAlpha = 0.5;
-      }
-      hlCtx.lineWidth = s.size;
-      hlCtx.lineCap = "round"; hlCtx.lineJoin = "round";
-      hlCtx.beginPath();
-      hlCtx.moveTo(s.points[0].x, s.points[0].y);
-      for (var j = 1; j < s.points.length; j++) hlCtx.lineTo(s.points[j].x, s.points[j].y);
-      hlCtx.stroke();
-      hlCtx.restore();
+    function paintHl(s, erase) {
+      if (!hlCtx || !hlCanvas) return;
+      hlCtx.save(); hlT(); applyStyle(hlCtx, s, erase || s.type === "eraser"); trace(hlCtx, s); hlCtx.restore();
     }
-    function getPos(e) {
-      var r = canvas.getBoundingClientRect();
-      // rect 已随页面滚动变化，client 坐标减 rect 即画布内部坐标
-      return { x: e.clientX - r.left, y: e.clientY - r.top };
-    }
-    /* ---- 增量绘制：每帧只画上一点→当前点，避免整张重绘造成卡顿 ---- */
-    function segPen(s, p0, p1) {
-      ctx.save();
-      ctx.setTransform(dprA, 0, 0, dprA, 0, 0);
-      if (s.type === "eraser") {
-        ctx.globalCompositeOperation = "destination-out";
-        ctx.strokeStyle = "rgba(0,0,0,1)";
-        ctx.globalAlpha = 1;
-      } else {
-        ctx.globalCompositeOperation = "source-over";
-        ctx.strokeStyle = s.color;
-        ctx.globalAlpha = 1;
-      }
-      ctx.lineWidth = s.size;
-      ctx.lineCap = "round"; ctx.lineJoin = "round";
-      ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y); ctx.stroke();
-      ctx.restore();
+    /* 增量：每帧只画上一点→当前点 */
+    function segPen(s, p0, p1, erase) {
+      ctx.save(); penT(); applyStyle(ctx, s, erase || s.type === "eraser");
+      ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y); ctx.stroke(); ctx.restore();
     }
     function segHl(s, p0, p1, erase) {
       if (!hlCtx || !hlCanvas) return;
-      var o = hlOffset();
-      hlCtx.save();
-      hlCtx.setTransform(dprH, 0, 0, dprH, 0, 0);
-      hlCtx.translate(-o.x, -o.y);
-      if (erase) {
-        hlCtx.globalCompositeOperation = "destination-out";
-        hlCtx.strokeStyle = "rgba(0,0,0,1)";
-        hlCtx.globalAlpha = 1;
-      } else {
-        hlCtx.globalCompositeOperation = "source-over";
-        hlCtx.strokeStyle = s.color;
-        hlCtx.globalAlpha = 0.5;
-      }
-      hlCtx.lineWidth = s.size;
-      hlCtx.lineCap = "round"; hlCtx.lineJoin = "round";
-      hlCtx.beginPath(); hlCtx.moveTo(p0.x, p0.y); hlCtx.lineTo(p1.x, p1.y); hlCtx.stroke();
-      hlCtx.restore();
+      hlCtx.save(); hlT(); applyStyle(hlCtx, s, erase || s.type === "eraser");
+      hlCtx.beginPath(); hlCtx.moveTo(p0.x, p0.y); hlCtx.lineTo(p1.x, p1.y); hlCtx.stroke(); hlCtx.restore();
     }
     function drawSegment(s, p0, p1) {
       if (s.type === "highlight") { segHl(s, p0, p1, false); }
-      else if (s.type === "eraser") { segPen(s, p0, p1); segHl(s, p0, p1, true); }
-      else { segPen(s, p0, p1); }
+      else if (s.type === "eraser") { segPen(s, p0, p1, true); segHl(s, p0, p1, true); }
+      else { segPen(s, p0, p1, false); }
     }
     function setMode(m) {
       mode = m;
       var through = (m === "select" || m === "edit");
-      // 选择/删改模式：画布穿透，文字可选中复制或直接编辑、链接可点
       canvas.style.pointerEvents = through ? "none" : "auto";
       canvas.style.cursor = (m === "eraser") ? "cell" : (through ? "text" : "crosshair");
       tb.querySelectorAll(".at-btn[data-action]").forEach(function (b) {
@@ -440,11 +397,13 @@
         type: mode,
         color: mode === "highlight" ? "#ffe23d" : penColor,
         size: mode === "highlight" ? penSize * 4 : (mode === "eraser" ? penSize * 4 : penSize),
-        points: [getPos(e)]
+        points: [], box: null
       };
+      var p0 = getPos(e);
+      current.points.push(p0); extendBox(current, p0);
       strokes.push(current);
       redoStack = [];
-      lastPt = current.points[0];
+      lastPt = p0;
     }
     function cancelCurrentStroke() {
       if (current && strokes[strokes.length - 1] === current) strokes.pop();
@@ -465,7 +424,7 @@
       var list = coalesced(ev);
       for (var i = 0; i < list.length; i++) {
         var p = getPos(list[i]);
-        current.points.push(p);
+        current.points.push(p); extendBox(current, p);
         drawSegment(current, lastPt, p);
         lastPt = p;
       }
@@ -477,7 +436,7 @@
         var list = coalesced(ev);
         for (var i = 0; i < list.length; i++) {
           var p = getPos(list[i]);
-          current.points.push(p);
+          current.points.push(p); extendBox(current, p);
           drawSegment(current, lastPt, p);
           lastPt = p;
         }
@@ -496,7 +455,6 @@
         gesture = "draw"; drawId = e.pointerId; drawing = true;
         beginStroke(e);
       } else if (pointers.size === 2) {
-        // 第二指落下：放弃正在画的这笔，进入双指滚动
         if (gesture === "draw") { drawId = null; cancelCurrentStroke(); }
         gesture = "scroll";
         scrollLastMid = midY();
@@ -533,7 +491,6 @@
           gesture = null;
           startInertia(scrollVel);
         }
-        // 还剩一根手指时保持滚动状态，不把它当成书写，直到全部抬起
       }
       try { canvas.releasePointerCapture && canvas.releasePointerCapture(e.pointerId); } catch (err) {}
     }
@@ -550,7 +507,7 @@
           if (redoStack.length) { strokes.push(redoStack.pop()); redraw(); }
           break;
         case "clear": strokes = []; redoStack = []; redraw(); break;
-        case "export": exportPNG(canvas, container, exportName); break;
+        case "export": exportPNG(); break;
       }
     }
     tb.addEventListener("annotate-action", onAction);
@@ -560,6 +517,14 @@
     });
     colorInput.addEventListener("input", function () { penColor = colorInput.value; });
 
+    /* 滚动 / 尺寸变化：移动视口画布并重绘可见段 */
+    var scrollRaf = 0;
+    function onScroll() {
+      if (scrollRaf) return;
+      scrollRaf = requestAnimationFrame(function () { scrollRaf = 0; syncCanvasSize(); });
+    }
+    window.addEventListener("scroll", onScroll, { passive: true });
+
     var ro = null;
     if (window.ResizeObserver) {
       ro = new ResizeObserver(function () { syncCanvasSize(); });
@@ -567,24 +532,141 @@
       if (stageEl) ro.observe(stageEl);
     }
     window.addEventListener("resize", syncCanvasSize);
-    // 字体/内容渲染后再同步，保证整页高度准确
     setTimeout(syncCanvasSize, 60);
     setTimeout(syncCanvasSize, 400);
     syncCanvasSize();
     setMode("select");
+
+    /* ============ 导出：整篇分片高清 PNG ============ */
+    var SLICE = 12000;   // 每片 CSS 像素高度（×dpr2 后 24000px，低于浏览器 32767 上限）
+
+    function loadSVG(svg) {
+      return new Promise(function (resolve, reject) {
+        var img = new Image();
+        img.onload = function () { resolve(img); };
+        img.onerror = function () { reject(new Error("svg load error")); };
+        img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+      });
+    }
+    function traceTo(c2, s, erase) {
+      if (s.points.length < 2) return;
+      applyStyle(c2, s, erase);
+      c2.beginPath();
+      c2.moveTo(s.points[0].x, s.points[0].y);
+      for (var i = 1; i < s.points.length; i++) c2.lineTo(s.points[i].x, s.points[i].y);
+      c2.stroke();
+    }
+    /* 把某一层（pen / highlight）在 [oy, oy+oh] 段内的笔画（含橡皮擦拭）画到离屏画布 */
+    function renderLayer(c2, dd, oy, oh, cssW, kind) {
+      function hit(s) {
+        var b = s.box;
+        if (!b) return true;
+        return !(b.y1 < oy || b.y0 > oy + oh || b.x1 < 0 || b.x0 > cssW);
+      }
+      c2.setTransform(dd, 0, 0, dd, 0, -oy * dd);
+      strokes.forEach(function (s) {
+        if (!hit(s)) return;
+        if (kind === "pen" && s.type === "pen") traceTo(c2, s, false);
+        if (kind === "hl" && s.type === "highlight") traceTo(c2, s, false);
+      });
+      c2.globalCompositeOperation = "destination-out";
+      strokes.forEach(function (s) {
+        if (s.type === "eraser" && hit(s)) traceTo(c2, s, true);
+      });
+      c2.globalCompositeOperation = "source-over";
+    }
+    function download(url, fname) {
+      var a = document.createElement("a");
+      a.download = fname; a.href = url;
+      document.body.appendChild(a); a.click(); a.remove();
+    }
+    function exportPNG() {
+      var cssW = container.clientWidth;
+      var cssH = Math.max(container.clientHeight, container.scrollHeight);
+
+      var clone = buildClone(container);
+      /* 测量整篇高度 */
+      var measure = document.createElement("div");
+      measure.style.cssText = "position:fixed;left:-99999px;top:0;visibility:hidden;width:" + cssW + "px;";
+      measure.innerHTML = "<style>" + EXPORT_CSS + "</style>";
+      measure.appendChild(clone);
+      document.body.appendChild(measure);
+      var contentH = measure.scrollHeight;
+      document.body.removeChild(measure);
+      var outH = Math.max(cssH, contentH);
+
+      var inner = "<style>" + EXPORT_CSS + "</style>" + clone.outerHTML;
+      var o = stageOrigin();
+      var sW = stageEl.clientWidth, sH = stageEl.clientHeight;
+
+      var ranges = [];
+      for (var y = 0; y < outH; y += SLICE) ranges.push([y, Math.min(SLICE, outH - y)]);
+      var total = ranges.length;
+      if (total > 1) {
+        alert("本篇较长，将连续下载 " + total + " 张高清 PNG（按从上到下顺序）；若浏览器询问是否允许下载多个文件，请点“允许”。");
+      }
+
+      var dd = Math.min(window.devicePixelRatio || 1, 2);
+      var safeName = (exportName || "article").replace(/[\\/:*?"<>|]/g, "_");
+
+      /* 整篇矢量只构造/排版一次，再按片用 drawImage 源矩形裁剪，
+         避免每片都对超长克隆重新排版导致卡死 */
+      var fullSvg =
+        '<svg xmlns="http://www.w3.org/2000/svg" width="' + cssW + '" height="' + outH + '">' +
+        "<foreignObject width='100%' height='100%'>" +
+        '<div xmlns="http://www.w3.org/1999/xhtml" style="width:' + cssW + 'px;">' + inner + "</div>" +
+        "</foreignObject></svg>";
+
+      loadSVG(fullSvg).then(function (img) {
+        /* 在导出按钮的同一次用户手势内连续触发下载，浏览器才允许多文件；
+           每张的文件名在其 click 时即与内容绑定，编号即段落顺序 */
+        ranges.forEach(function (rg, idx) {
+          var sh0 = rg[0], sh = rg[1];
+          var out = document.createElement("canvas");
+          out.width = Math.round(cssW * dd);
+          out.height = Math.round(sh * dd);
+          var x = out.getContext("2d");
+          x.setTransform(dd, 0, 0, dd, 0, -sh0 * dd);
+          x.fillStyle = "#f7f4ec";
+          x.fillRect(-2, sh0, cssW + 4, sh);
+          /* 纸卡底（整条圆角矩形，画布自然裁出本片相交段） */
+          x.fillStyle = "#fffdf6";
+          roundRectPath(x, o.x, o.y, sW, sH, 14);
+          x.fill();
+          /* 荧光层（文字下方） */
+          var hcv = document.createElement("canvas");
+          hcv.width = out.width; hcv.height = out.height;
+          renderLayer(hcv.getContext("2d"), dd, sh0, sh, cssW, "hl");
+          x.drawImage(hcv, 0, sh0, cssW, sh);
+          /* 版面原文：从整篇矢量源裁剪本片 */
+          x.drawImage(img, 0, sh0, cssW, sh, 0, sh0, cssW, sh);
+          /* 顶层画笔 */
+          var pcv = document.createElement("canvas");
+          pcv.width = out.width; pcv.height = out.height;
+          renderLayer(pcv.getContext("2d"), dd, sh0, sh, cssW, "pen");
+          x.drawImage(pcv, 0, sh0, cssW, sh);
+
+          var fname = total === 1
+            ? safeName + "-批注.png"
+            : safeName + "-批注-" + String(idx + 1).padStart(2, "0") + "of" + String(total).padStart(2, "0") + ".png";
+          download(out.toDataURL("image/png"), fname);
+        });
+      }).catch(function () { alert("导出失败，请重试"); });
+    }
 
     return {
       destroy: function () {
         try { setEditing(false); } catch (e) {}
         tb.removeEventListener("annotate-action", onAction);
         window.removeEventListener("resize", syncCanvasSize);
+        window.removeEventListener("scroll", onScroll);
         if (ro) ro.disconnect();
       }
     };
   }
 
   /* ============================================================
-     导出：foreignObject 保真渲染整页原文 + 批注叠加
+     导出克隆样式与克隆构造（保真排版）
      ============================================================ */
   var EXPORT_CSS =
     "*{box-sizing:border-box;}" +
@@ -600,7 +682,6 @@
     ".xcrumb a{color:#42504b;text-decoration:none;}" +
     ".xcrumb .sep{color:#c3baa4;}" +
     ".xstage{position:relative;background:transparent;border:1px solid #e0d8c2;border-radius:14px;padding:44px 52px 52px;}" +
-    ".xkicker{font-size:13px;color:#b07d24;font-weight:600;margin:0 0 8px;letter-spacing:.04em;}" +
     ".xstage h1{font:700 30px Georgia,'Times New Roman','Songti SC',serif;color:#143d35;line-height:1.3;margin:0 0 24px;padding-bottom:16px;border-bottom:2px solid #e9d7ab;}" +
     ".xstage .part-h{font:700 23px Georgia,'Times New Roman','Songti SC',serif;color:#143d35;line-height:1.4;margin:34px 0 16px;padding:8px 0 8px 14px;border-left:4px solid #b07d24;}" +
     ".xstage .sub-h{font:700 17px -apple-system,'Segoe UI','Microsoft YaHei',sans-serif;color:#1e5b4f;line-height:1.5;margin:22px 0 10px;}" +
@@ -659,7 +740,6 @@
     var stage = clone.querySelector(".annotate-stage");
     if (stage) {
       stage.classList.add("xstage");
-      // 纸张底色与荧光改由导出画布分层绘制，故克隆纸张背景透明，让下层荧光透出、文字压在其上
       stage.style.background = "transparent";
     }
 
@@ -668,7 +748,6 @@
     if (eb && eb.parentNode) eb.parentNode.removeChild(eb);
     var cn = clone.querySelector(".chapter-nav");
     if (cn && cn.parentNode) cn.parentNode.removeChild(cn);
-    // 保留 .part-toc（本课内容导航），否则克隆正文上移，荧光坐标会与文字错位
     var txt = clone.querySelector(".annotate-text");
     if (txt) { txt.removeAttribute("contenteditable"); txt.classList.remove("editing"); }
 
@@ -697,72 +776,6 @@
     c.arcTo(x, y + h, x, y, r);
     c.arcTo(x, y, x + w, y, r);
     c.closePath();
-  }
-
-  function exportPNG(canvas, container, name) {
-    var cssW = container.clientWidth;
-    var cssH = Math.max(container.clientHeight, container.scrollHeight);
-
-    var measure = document.createElement("div");
-    measure.style.cssText = "position:fixed;left:-99999px;top:0;visibility:hidden;width:" + cssW + "px;";
-    measure.innerHTML = "<style>" + EXPORT_CSS + "</style>";
-    measure.appendChild(buildClone(container));
-    document.body.appendChild(measure);
-    var contentH = measure.scrollHeight;
-    document.body.removeChild(measure);
-    var outH = Math.max(cssH, contentH);
-
-    var wrap = document.createElement("div");
-    wrap.innerHTML = "<style>" + EXPORT_CSS + "</style>";
-    wrap.appendChild(buildClone(container));
-    var svg =
-      '<svg xmlns="http://www.w3.org/2000/svg" width="' + cssW + '" height="' + outH + '">' +
-      "<foreignObject width='100%' height='100%'>" +
-      '<div xmlns="http://www.w3.org/1999/xhtml">' + wrap.innerHTML + "</div>" +
-      "</foreignObject></svg>";
-
-    // data URI（非 blob）加载纯内联 SVG，不会污染导出画布
-    var url = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
-    var img = new Image();
-    img.onload = function () {
-      var dpr = Math.min(window.devicePixelRatio || 1, 2);
-      var out = document.createElement("canvas");
-      out.width = Math.round(cssW * dpr);
-      out.height = Math.round(outH * dpr);
-      var octx = out.getContext("2d");
-      octx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      octx.fillStyle = "#f7f4ec";
-      octx.fillRect(0, 0, cssW, outH);
-
-      // 分层：纸卡底色 → 荧光（文字下方）→ 文字/版面（foreignObject）→ 顶层画笔
-      var stg = container.querySelector(".annotate-stage");
-      var hl0 = container.querySelector("#annotate-hl");
-      if (stg) {
-        var sr = stg.getBoundingClientRect();
-        var sx = sr.left + window.scrollX, sy = sr.top + window.scrollY;
-        octx.fillStyle = "#fffdf6";
-        roundRectPath(octx, sx, sy, sr.width, sr.height, 14);
-        octx.fill();
-        if (hl0) {
-          octx.drawImage(hl0, sx + 1, sy + 1, stg.clientWidth, stg.clientHeight);
-        }
-      }
-      octx.drawImage(img, 0, 0, cssW, outH);
-      var ch = canvas.clientHeight || cssH;
-      octx.drawImage(canvas, 0, 0, canvas.clientWidth || cssW, ch);
-
-      var fileName = (name || "article").replace(/[\\/:*?"<>|]/g, "_");
-      var a = document.createElement("a");
-      a.download = fileName + "-批注.png";
-      a.href = out.toDataURL("image/png");
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-    };
-    img.onerror = function () {
-      alert("导出失败，请重试");
-    };
-    img.src = url;
   }
 
   window.AnnotateApp = { mount: mount };
