@@ -180,7 +180,7 @@
     });
 
     var tocHtml = "";
-    if (parts.length > 1) {
+    if (parts.length >= 1) {
       tocHtml = '<nav class="part-toc"><span class="pt-label">本课内容</span>';
       parts.forEach(function (pt) {
         tocHtml += '<a href="javascript:void(0)" data-to="' + pt.id + '">' + esc(pt.name) + "</a>";
