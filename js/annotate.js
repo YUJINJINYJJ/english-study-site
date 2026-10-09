@@ -76,10 +76,10 @@
       b.title = label;
       tb.appendChild(b);
     }
-    addBtn("pen", "画笔", " active");
+    addBtn("pen", "画笔");
     addBtn("highlight", "荧光笔");
     addBtn("eraser", "橡皮擦");
-    addBtn("select", "选择");
+    addBtn("select", "选择", " active");
     addBtn("edit", "删改文字", " at-edit");
 
     tb.appendChild(el("span", "at-sep"));
@@ -88,7 +88,7 @@
     sizeWrap.title = "粗细";
     sizeWrap.appendChild(el("span", "", "粗细"));
     var range = el("input");
-    range.type = "range"; range.min = "1"; range.max = "24"; range.value = "5";
+    range.type = "range"; range.min = "1"; range.max = "24"; range.value = "1";
     range.setAttribute("data-ctl", "size");
     sizeWrap.appendChild(range);
     tb.appendChild(sizeWrap);
@@ -170,10 +170,16 @@
       return Math.max(1, d);
     }
     var strokes = [], redoStack = [];
-    var mode = "pen", penSize = 5, penColor = "#c4453c";
+    var SIZE_STORE = "english-annotate-pensize-v1";
+    function readPenSize() {
+      try { var v = parseInt(localStorage.getItem(SIZE_STORE), 10); if (v >= 1 && v <= 24) return v; } catch (e) {}
+      return 1;
+    }
+    var mode = "select", penSize = readPenSize(), penColor = "#c4453c";
     var drawing = false, current = null;
     var sizeInput = tb.querySelector('[data-ctl="size"]');
     var colorInput = tb.querySelector('[data-ctl="color"]');
+    sizeInput.value = penSize;
 
     /* ---------- 文字删改（仅本机，不改原文件） ---------- */
     var EDIT_STORE = "english-lesson-edits-v2";
@@ -216,10 +222,10 @@
         if (!textEl) return;
         textEl.innerHTML = originalHtml;
         var all = readEditStore(); delete all[editKey]; writeEditStore(all);
-        setMode("pen");
+        setMode("select");
       });
       banner.querySelector(".eb-done").addEventListener("click", function () {
-        saveEdit(); setMode("pen");
+        saveEdit(); setMode("select");
       });
       if (stageEl && stageEl.parentNode) stageEl.parentNode.insertBefore(banner, stageEl);
       else container.appendChild(banner);
@@ -548,7 +554,10 @@
       }
     }
     tb.addEventListener("annotate-action", onAction);
-    sizeInput.addEventListener("input", function () { penSize = parseInt(sizeInput.value, 10) || 5; });
+    sizeInput.addEventListener("input", function () {
+      penSize = parseInt(sizeInput.value, 10) || 1;
+      try { localStorage.setItem(SIZE_STORE, String(penSize)); } catch (e) {}
+    });
     colorInput.addEventListener("input", function () { penColor = colorInput.value; });
 
     var ro = null;
@@ -562,7 +571,7 @@
     setTimeout(syncCanvasSize, 60);
     setTimeout(syncCanvasSize, 400);
     syncCanvasSize();
-    setMode("pen");
+    setMode("select");
 
     return {
       destroy: function () {
